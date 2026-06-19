@@ -70,16 +70,23 @@ def fetch_mkt_data():
         if spy_ticker.empty or rsp_ticker.empty:
             return pd.DataFrame()
             
+        # FIX: Strip out timezones completely so the dates join perfectly
+        spy_ticker.index = spy_ticker.index.tz_localize(None)
+        rsp_ticker.index = rsp_ticker.index.tz_localize(None)
+        
         spy_close = spy_ticker["Close"].rename("SPY")
         rsp_close = rsp_ticker["Close"].rename("RSP")
         
-        # FIX 2: Align SPY and RSP on matching trading dates using an inner join
+        # Align SPY and RSP on matching trading dates using an inner join
         df = pd.concat([spy_close, rsp_close], axis=1, join="inner")
+        
+        # Calculate ratio and wipe out any rows with an empty value
+        df["Ratio"] = df["SPY"] / df["RSP"]
+        df = df.dropna()
         
         if df.empty or len(df) < 5:
             return pd.DataFrame()
             
-        df["Ratio"] = df["SPY"] / df["RSP"]
         return df
     except Exception:
         return pd.DataFrame()
@@ -101,7 +108,6 @@ col1, col2, col3, col4 = st.columns(4)
 # 1. INITIAL CLAIMS CARD
 with col1:
     st.subheader("Initial Claims")
-    # FIX 3: Check length before using indexing to prevent IndexError crashes
     if not df_icsa.empty and len(df_icsa) >= 2:
         latest_icsa = df_icsa["ICSA"].iloc[-1]
         prev_icsa = df_icsa["ICSA"].iloc[-2]
@@ -115,7 +121,6 @@ with col1:
             delta_color="inverse",
             help="WHAT TO LOOK FOR: If this number shoots ABOVE 250k, it means people are losing jobs. When people lose jobs, their automatic 401k stock buying stops, and the stock market loses its steady fuel."
         )
-        # FIX 5: Display latest data observation timestamps
         st.caption(f"📅 Latest Obs: {as_of_date}")
         if latest_icsa > 250000:
             st.error("🚨 DANGER: Over 250k Threshold!")
@@ -172,7 +177,7 @@ with col3:
     else:
         st.error("❌ Yield Spread data unavailable")
 
-# 4. INELASTICITY CARD
+# 4. INELASTICITY CARD (With NaN Guards)
 with col4:
     st.subheader("Market Distortion")
     if not df_mkt.empty and len(df_mkt) >= 5:
@@ -181,17 +186,20 @@ with col4:
         ratio_delta = round(latest_ratio - prev_ratio, 3)
         as_of_date = df_mkt.index[-1].strftime("%b %d, %Y")
         
-        st.metric(
-            label="SPY / RSP Ratio",
-            value=f"{latest_ratio:.3f}",
-            delta=f"{ratio_delta:.3f} (5d change)",
-            help="WHAT TO LOOK FOR: Tracks how 'top-heavy' the stock market is. Above 3.00 means passive flows are blindly forcing all the market's money into just the top 10 mega-caps (like Nvidia and Apple), leaving the other 490 stocks starved."
-        )
-        st.caption(f"📅 Latest Obs: {as_of_date}")
-        if latest_ratio > 3.0:
-            st.warning("⚠️ TOP-HEAVY: Ratio over 3.0")
+        if pd.isna(latest_ratio):
+            st.error("❌ Market data calculation error")
         else:
-            st.success("🟢 BROAD MARKET: Ratio under 3.0")
+            st.metric(
+                label="SPY / RSP Ratio",
+                value=f"{latest_ratio:.3f}",
+                delta=f"{ratio_delta:.3f} (5d change)",
+                help="WHAT TO LOOK FOR: Tracks how 'top-heavy' the stock market is. Above 3.00 means passive flows are blindly forcing all the market's money into just the top 10 mega-caps (like Nvidia and Apple), leaving the other 490 stocks starved."
+            )
+            st.caption(f"📅 Latest Obs: {as_of_date}")
+            if latest_ratio > 3.0:
+                st.warning("⚠️ TOP-HEAVY: Ratio over 3.0")
+            else:
+                st.success("🟢 BROAD MARKET: Ratio under 3.0")
     else:
         st.error("❌ Market data unavailable")
 
@@ -225,6 +233,8 @@ with tab1:
         fig1.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Ratio"], mode="lines", name="Current Ratio", line=dict(color="#1f77b4", width=3)))
         fig1.update_layout(xaxis_title="Date", yaxis_title="Ratio Value", margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig1, use_container_width=True)
+    else:
+        st.warning("Cannot display visualization: Market alignment dataset empty.")
 
 with tab2:
     st.subheader("Weekly Initial Jobless Claims")
