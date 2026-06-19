@@ -23,44 +23,49 @@ st.divider()
 UTC_TODAY = datetime.datetime.now(datetime.timezone.utc).date()
 
 
-# Helper function to grab FRED data safely bypassing bot blocks + retry handling
+# Helper function to grab FRED data safely bypassing bot blocks with explicit timeouts
 @st.cache_data(ttl=3600)
 def fetch_fred_csv(series_id):
+    # Using the direct data download URL endpoint with an explicit timeout
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0"}
+            url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         )
-        with urllib.request.urlopen(req) as response:
+        # Added a strict 10-second timeout so the app never hangs indefinitely
+        with urllib.request.urlopen(req, timeout=10) as response:
             df = pd.read_csv(response, parse_dates=["DATE"], index_col="DATE")
 
         df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
         df = df.dropna()
         return df
     except Exception as e:
-        return pd.DataFrame()  # Empty dataframe on failure instead of crashing
+        # Log error to Streamlit components so you can see if a specific download fails
+        st.sidebar.error(f"FRED {series_id} load failed.")
+        return pd.DataFrame()
 
 
-# Helper function to grab Yahoo Finance data safely guarding against MultiIndex
+# Helper function to grab Yahoo Finance data safely guarding against multi-index columns
 @st.cache_data(ttl=3600)
 def fetch_mkt_data():
     start_date = UTC_TODAY - datetime.timedelta(days=365)
     try:
-        data = yf.download(
-            ["SPY", "RSP"], start=start_date, end=UTC_TODAY, progress=False
-        )
-        if data.empty:
+        # Download tickers individually to bypass any multi-index pandas data structure variations
+        spy = yf.Ticker("SPY").history(start=start_date, end=UTC_TODAY)
+        rsp = yf.Ticker("RSP").history(start=start_date, end=UTC_TODAY)
+        
+        if spy.empty or rsp.empty:
             return pd.DataFrame()
-
-        # Handle yfinance multi-ticker Close column safely (v0.2.x layout extraction)
-        if "Close" in data.columns:
-            close_prices = data["Close"][["SPY", "RSP"]].copy()
-            close_prices["Ratio"] = (
-                close_prices["SPY"] / close_prices["RSP"]
-            )
-            return close_prices
-        return pd.DataFrame()
-    except Exception:
+            
+        # Reconstruct a clean, flat dataframe manually
+        df = pd.DataFrame(index=spy.index)
+        df["SPY"] = spy["Close"]
+        df["RSP"] = rsp["Close"]
+        df["Ratio"] = df["SPY"] / df["RSP"]
+        df = df.dropna()
+        return df
+    except Exception as e:
+        st.sidebar.error(f"Market data load failed.")
         return pd.DataFrame()
 
 
@@ -74,7 +79,7 @@ with st.spinner("Fetching latest market and macro plumbing metrics..."):
     df_mkt = fetch_mkt_data()
 
 # -----------------------------------------------------------------------------
-# PHASE 1: METRICS DISPLAY (Granular Checks per Section)
+# PHASE 1: METRICS DISPLAY
 # -----------------------------------------------------------------------------
 st.header("🚨 Systemic Threshold Alerts")
 col1, col2, col3, col4 = st.columns(4)
@@ -170,7 +175,7 @@ with col4:
 st.divider()
 
 # -----------------------------------------------------------------------------
-# PHASE 2: CHARTS (Interactive Plotly Implementations)
+# PHASE 2: CHARTS
 # -----------------------------------------------------------------------------
 st.header("📈 Data Visualizations")
 
@@ -180,9 +185,6 @@ tab1, tab2, tab3 = st.tabs(
 
 with tab1:
     st.subheader("SPY (Market-Cap Weighted) vs RSP (Equal Weighted) Ratio")
-    st.markdown(
-        "**Why it matters:** When this ratio rises aggressively, it indicates blind passive flows are disproportionately forcing capital into mega-cap stocks regardless of valuation."
-    )
     if not df_mkt.empty:
         fig1 = go.Figure()
         fig1.add_trace(
@@ -202,11 +204,8 @@ with tab1:
 
 with tab2:
     st.subheader("Weekly Initial Jobless Claims")
-    st.markdown(
-        "**Why it matters:** Job losses disrupt automatic, recurring payroll contributions into retirement accounts—the exact engine powering passive index fund buying."
-    )
     if not df_icsa.empty:
-        plot_df = df_icsa.tail(104)  # 2 years
+        plot_df = df_icsa.tail(104)
         fig2 = go.Figure()
         fig2.add_hline(
             y=250000,
@@ -233,11 +232,8 @@ with tab2:
 
 with tab3:
     st.subheader("ICE BofA High Yield Option-Adjusted Spread")
-    st.markdown(
-        "**Why it matters:** Credit markets are overwhelmingly actively managed. Spreads widen when economic conditions decay under the surface, acting as an early warning indicator for overall liquidity stress."
-    )
     if not df_spread.empty:
-        plot_df = df_spread.tail(260)  # 5 years
+        plot_df = df_spread.tail(260)
         fig3 = go.Figure()
         fig3.add_hline(
             y=4.5,
@@ -262,25 +258,15 @@ with tab3:
     else:
         st.warning("Cannot display visualization: Spread dataset empty")
 
-
-# Sidebar Theory Tooltips and Expander Explanations
+# Sidebar Theory Tooltips
 with st.sidebar:
     st.title("Dashboard Parameters")
-
     with st.expander("ℹ️ About the Threshold Targets"):
         st.markdown(
             """
-        These specific triggers are derived from **Mike Green's Passive Market Structure Research**:
-        * **250k Initial Claims / 1.9M Continuing Claims:** Breaching these numbers implies systemic macro worker disruption, stopping automated bi-weekly index buying flows.
+        These triggers are derived from **Mike Green's Passive Market Structure Research**:
+        * **250k Initial Claims / 1.9M Continuing Claims:** Structural breakdown parameters for automated 401(k) inflows.
         * **4.5% High Yield Spread:** Real-time marker of pricing elasticity shifting in active markets.
-        * **83% Passive Threshold:** The ultimate structural limit. Beyond this line, market index clearing engines mathematically lose structural stability.
+        * **83% Passive Threshold:** Mathematical breaking point of the market index clearing engine.
         """
         )
-
-    st.info(
-        """
-    **Current Estimates (2026):**
-    * Estimated Passive Share: **~54%**
-    * Static Breaking Point: **83%**
-    """
-    )
