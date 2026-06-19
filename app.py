@@ -70,7 +70,7 @@ def fetch_mkt_data():
         if spy_ticker.empty or rsp_ticker.empty:
             return pd.DataFrame()
             
-        # FIX: Strip out timezones completely so the dates join perfectly
+        # Strip out timezones completely so the dates join perfectly
         spy_ticker.index = spy_ticker.index.tz_localize(None)
         rsp_ticker.index = rsp_ticker.index.tz_localize(None)
         
@@ -98,6 +98,30 @@ with st.spinner("Fetching latest market and macro plumbing metrics..."):
     df_ccsa = fetch_fred_api("CCSA", fred_key) if fred_key else pd.DataFrame()
     df_spread = fetch_fred_api("BAMLH0A0HYM2", fred_key) if fred_key else pd.DataFrame()
     df_mkt = fetch_mkt_data()
+
+# -----------------------------------------------------------------------------
+# TWEAK 1: QUICK AT-A-GLANCE EXECUTIVE STATUS SUMMARY
+# -----------------------------------------------------------------------------
+if not df_mkt.empty and not df_icsa.empty and not df_spread.empty:
+    current_ratio = df_mkt["Ratio"].iloc[-1]
+    current_icsa = df_icsa["ICSA"].iloc[-1]
+    current_spread = df_spread["BAMLH0A0HYM2"].iloc[-1]
+    
+    triggers_tripped = 0
+    if current_ratio > 3.0: triggers_tripped += 1
+    if current_icsa > 250000: triggers_tripped += 1
+    if current_spread > 4.5: triggers_tripped += 1
+    
+    if triggers_tripped >= 2:
+        st.error("🚨 **SYSTEMIC ASSESSMENT:** Multiple system threshold conditions are triggered. High concentration/stress environment.")
+    elif triggers_tripped == 1:
+        st.warning("⚠️ **SYSTEMIC ASSESSMENT:** One system criteria watch active. Review individual cards below.")
+    else:
+        st.success("🟢 **SYSTEMIC ASSESSMENT:** Everything is clear. All parameters are tracking inside normal baseline boundaries.")
+else:
+    st.info("💡 **SYSTEMIC ASSESSMENT:** Connect your API key to generate system health status indicators.")
+
+st.divider()
 
 # -----------------------------------------------------------------------------
 # PHASE 1: METRICS DISPLAY (With floating information icons + Freshness Dates)
@@ -232,6 +256,11 @@ with tab1:
         
         fig1.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Ratio"], mode="lines", name="Current Ratio", line=dict(color="#1f77b4", width=3)))
         fig1.update_layout(xaxis_title="Date", yaxis_title="Ratio Value", margin=dict(l=20, r=20, t=20, b=20))
+        
+        # TWEAK 2: Crosshair Mouse Tracking
+        fig1.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
+        fig1.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
+        
         st.plotly_chart(fig1, use_container_width=True)
     else:
         st.warning("Cannot display visualization: Market alignment dataset empty.")
@@ -251,6 +280,11 @@ with tab2:
         fig2.add_hline(y=250000, line_dash="dash", line_color="red", line_width=2)
         fig2.add_trace(go.Scatter(x=plot_df.index, y=plot_df["ICSA"], mode="lines", name="Initial Claims", line=dict(color="#FF4B4B", width=2.5)))
         fig2.update_layout(xaxis_title="Date", yaxis_title="Claims Volume", margin=dict(l=20, r=20, t=20, b=20))
+        
+        # TWEAK 2: Crosshair Mouse Tracking
+        fig2.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
+        fig2.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
+        
         st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
@@ -268,13 +302,24 @@ with tab3:
         fig3.add_hline(y=4.5, line_dash="dash", line_color="red", line_width=2)
         fig3.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BAMLH0A0HYM2"], mode="lines", name="Credit Spread", line=dict(color="#00C0F2", width=2.5)))
         fig3.update_layout(xaxis_title="Date", yaxis_title="Spread Percentage (%)", margin=dict(l=20, r=20, t=20, b=20))
+        
+        # TWEAK 2: Crosshair Mouse Tracking
+        fig3.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
+        fig3.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
+        
         st.plotly_chart(fig3, use_container_width=True)
 
 
 # Sidebar parameters and background context information
 with st.sidebar:
-    st.title("🧩 Passive Index Theory Reminders")
+    # TWEAK 3: MANUAL REFRESH CONTROL
+    st.title("⚙️ App Controls")
+    if st.button("🔄 Clear Cache & Refresh Data"):
+        st.cache_data.clear()
+        st.rerun()
+    st.divider()
     
+    st.title("🧩 Passive Index Theory Reminders")
     st.info("""
     **Where is the 83% Breaking Point?**
     Mike Green proves that when the total passive index share hits **83%**, the market's basic pricing engine mechanically breaks down. 
