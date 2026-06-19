@@ -24,7 +24,76 @@ st.divider()
 UTC_TODAY = datetime.datetime.now(datetime.timezone.utc).date()
 
 # -----------------------------------------------------------------------------
-# API KEY RESOLUTION (Streamlit Secrets or Sidebar Input fallback)
+# HELPER FUNCTIONS (Cleaned & Consolidated)
+# -----------------------------------------------------------------------------
+def format_obs_date(df):
+    """Helper function to format the latest observation date cleanly."""
+    if df.empty:
+        return "N/A"
+    return df.index[-1].strftime("%b %d, %Y")
+
+@st.cache_data(ttl=3600)
+def fetch_fred_api(series_id, api_key):
+    """Fetches series observations alongside metadata properties from FRED."""
+    if not api_key:
+        return pd.DataFrame(), "N/A"
+    
+    obs_url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={api_key}&file_type=json"
+    meta_url = f"https://api.stlouisfed.org/fred/series?series_id={series_id}&api_key={api_key}&file_type=json"
+    
+    try:
+        obs_res = requests.get(obs_url, timeout=10).json()
+        meta_res = requests.get(meta_url, timeout=10).json()
+        
+        if "observations" not in obs_res:
+            return pd.DataFrame(), "N/A"
+            
+        df = pd.DataFrame(obs_res["observations"])
+        df["DATE"] = pd.to_datetime(df["date"])
+        df[series_id] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.set_index("DATE")[[series_id]].dropna()
+        
+        # Pull last update time from metadata
+        last_updated = "N/A"
+        if "seriess" in meta_res and len(meta_res["seriess"]) > 0:
+            raw_date = meta_res["seriess"][0].get("last_updated", "")
+            if raw_date:
+                last_updated = pd.to_datetime(raw_date).strftime("%b %d, %Y")
+                
+        return df, last_updated
+    except Exception:
+        return pd.DataFrame(), "N/A"
+
+@st.cache_data(ttl=3600)
+def fetch_mkt_data():
+    """Grab Yahoo Finance data & strictly align dates."""
+    start_date = UTC_TODAY - datetime.timedelta(days=365)
+    try:
+        spy_ticker = yf.Ticker("SPY").history(start=start_date, end=UTC_TODAY)
+        rsp_ticker = yf.Ticker("RSP").history(start=start_date, end=UTC_TODAY)
+        
+        if spy_ticker.empty or rsp_ticker.empty:
+            return pd.DataFrame()
+            
+        spy_ticker.index = spy_ticker.index.tz_localize(None)
+        rsp_ticker.index = rsp_ticker.index.tz_localize(None)
+        
+        spy_close = spy_ticker["Close"].rename("SPY")
+        rsp_close = rsp_ticker["Close"].rename("RSP")
+        
+        df = pd.concat([spy_close, rsp_close], axis=1, join="inner")
+        df["Ratio"] = df["SPY"] / df["RSP"]
+        df = df.dropna()
+        
+        if df.empty or len(df) < 5:
+            return pd.DataFrame()
+            
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# -----------------------------------------------------------------------------
+# API KEY RESOLUTION & INITIAL LOAD
 # -----------------------------------------------------------------------------
 fred_key = None
 if "FRED_API_KEY" in st.secrets:
@@ -39,68 +108,14 @@ else:
 if not fred_key:
     st.warning("⚠️ Please enter your free FRED API Key in the left sidebar to show the Macro Flow numbers.")
 
-
-# Helper function to fetch data using FRED's official JSON endpoint
-@st.cache_data(ttl=3600)
-def fetch_fred_api(series_id, api_key):
-    if not api_key:
-        return pd.DataFrame()
-    url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={api_key}&file_type=json"
-    try:
-        response = requests.get(url, timeout=10).json()
-        if "observations" not in response:
-            return pd.DataFrame()
-        df = pd.DataFrame(response["observations"])
-        df["DATE"] = pd.to_datetime(df["date"])
-        df[series_id] = pd.to_numeric(df["value"], errors="coerce")
-        df = df.set_index("DATE")[[series_id]].dropna()
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
-# Helper function to grab Yahoo Finance data & strictly align dates
-@st.cache_data(ttl=3600)
-def fetch_mkt_data():
-    start_date = UTC_TODAY - datetime.timedelta(days=365)
-    try:
-        spy_ticker = yf.Ticker("SPY").history(start=start_date, end=UTC_TODAY)
-        rsp_ticker = yf.Ticker("RSP").history(start=start_date, end=UTC_TODAY)
-        
-        if spy_ticker.empty or rsp_ticker.empty:
-            return pd.DataFrame()
-            
-        # Strip out timezones completely so the dates join perfectly
-        spy_ticker.index = spy_ticker.index.tz_localize(None)
-        rsp_ticker.index = rsp_ticker.index.tz_localize(None)
-        
-        spy_close = spy_ticker["Close"].rename("SPY")
-        rsp_close = rsp_ticker["Close"].rename("RSP")
-        
-        # Align SPY and RSP on matching trading dates using an inner join
-        df = pd.concat([spy_close, rsp_close], axis=1, join="inner")
-        
-        # Calculate ratio and wipe out any rows with an empty value
-        df["Ratio"] = df["SPY"] / df["RSP"]
-        df = df.dropna()
-        
-        if df.empty or len(df) < 5:
-            return pd.DataFrame()
-            
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
-# Load Data
 with st.spinner("Fetching latest market and macro plumbing metrics..."):
-    df_icsa = fetch_fred_api("ICSA", fred_key) if fred_key else pd.DataFrame()
-    df_ccsa = fetch_fred_api("CCSA", fred_key) if fred_key else pd.DataFrame()
-    df_spread = fetch_fred_api("BAMLH0A0HYM2", fred_key) if fred_key else pd.DataFrame()
+    df_icsa, icsa_updated = fetch_fred_api("ICSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
+    df_ccsa, ccsa_updated = fetch_fred_api("CCSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
+    df_spread, spread_updated = fetch_fred_api("BAMLH0A0HYM2", fred_key) if fred_key else (pd.DataFrame(), "N/A")
     df_mkt = fetch_mkt_data()
 
 # -----------------------------------------------------------------------------
-# TWEAK 1: QUICK AT-A-GLANCE EXECUTIVE STATUS SUMMARY
+# EXECUTIVE AT-A-GLANCE STATUS SUMMARY
 # -----------------------------------------------------------------------------
 if not df_mkt.empty and not df_icsa.empty and not df_spread.empty:
     current_ratio = df_mkt["Ratio"].iloc[-1]
@@ -124,7 +139,7 @@ else:
 st.divider()
 
 # -----------------------------------------------------------------------------
-# PHASE 1: METRICS DISPLAY (With floating information icons + Freshness Dates)
+# PHASE 1: METRICS DISPLAY
 # -----------------------------------------------------------------------------
 st.header("🚨 Systemic Threshold Alerts")
 col1, col2, col3, col4 = st.columns(4)
@@ -136,16 +151,15 @@ with col1:
         latest_icsa = df_icsa["ICSA"].iloc[-1]
         prev_icsa = df_icsa["ICSA"].iloc[-2]
         icsa_delta = latest_icsa - prev_icsa
-        as_of_date = df_icsa.index[-1].strftime("%b %d, %Y")
         
         st.metric(
             label="Weekly Jobless Claims",
             value=f"{latest_icsa:,.0f}",
             delta=f"{icsa_delta:,.0f} vs last wk",
             delta_color="inverse",
-            help="WHAT TO LOOK FOR: If this number shoots ABOVE 250k, it means people are losing jobs. When people lose jobs, their automatic 401k stock buying stops, and the stock market loses its steady fuel."
+            help="WHAT TO LOOK FOR: If this number shoots ABOVE 250k, it means people are losing jobs. When people lose jobs, their automatic 401k stock buying stops."
         )
-        st.caption(f"📅 Latest Obs: {as_of_date}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_icsa)} | **Release:** {icsa_updated}")
         if latest_icsa > 250000:
             st.error("🚨 DANGER: Over 250k Threshold!")
         else:
@@ -160,7 +174,6 @@ with col2:
         latest_ccsa = df_ccsa["CCSA"].iloc[-1]
         prev_ccsa = df_ccsa["CCSA"].iloc[-2]
         ccsa_delta = latest_ccsa - prev_ccsa
-        as_of_date = df_ccsa.index[-1].strftime("%b %d, %Y")
         
         st.metric(
             label="Insured Unemployed",
@@ -169,7 +182,7 @@ with col2:
             delta_color="inverse",
             help="WHAT TO LOOK FOR: Tracks people stuck out of work. If this crosses 1.9 Million, systemic 401(k) inflows fade away completely."
         )
-        st.caption(f"📅 Latest Obs: {as_of_date}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_ccsa)} | **Release:** {ccsa_updated}")
         if latest_ccsa > 1900000:
             st.error("🚨 DANGER: Over 1.9M Threshold!")
         else:
@@ -177,23 +190,22 @@ with col2:
     else:
         st.error("❌ CCSA data unavailable")
 
-# 3. HIGH YIELD SPREAD CARD
+# 3. HIGH YIELD SPREAD CARD (Updated Formatting)
 with col3:
     st.subheader("Credit Risk")
     if not df_spread.empty and len(df_spread) >= 2:
         latest_spread = df_spread["BAMLH0A0HYM2"].iloc[-1]
         prev_spread = df_spread["BAMLH0A0HYM2"].iloc[-2]
-        spread_delta = round(latest_spread - prev_spread, 2)
-        as_of_date = df_spread.index[-1].strftime("%b %d, %Y")
+        spread_delta = latest_spread - prev_spread
         
         st.metric(
             label="HY Bond Spread",
-            value=f"{latest_spread}%",
-            delta=f"{spread_delta}% vs prev day",
+            value=f"{latest_spread:.2f}%",
+            delta=f"{spread_delta:.2f}% vs prev day",
             delta_color="inverse",
-            help="WHAT TO LOOK FOR: This tracks smart bond investors. If this crosses 4.5%, it means real economic panic is happening under the surface, even if the passive stock market looks happy."
+            help="WHAT TO LOOK FOR: This tracks smart bond investors. If this crosses 4.5%, it means real economic panic is happening under the surface."
         )
-        st.caption(f"📅 Latest Obs: {as_of_date}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_spread)} | **Release:** {spread_updated}")
         if latest_spread > 4.5:
             st.error("🚨 STRESS ALERT: Over 4.5%!")
         else:
@@ -201,14 +213,13 @@ with col3:
     else:
         st.error("❌ Yield Spread data unavailable")
 
-# 4. INELASTICITY CARD (With NaN Guards)
+# 4. MARKET CONCENTRATION PROXY CARD (Renamed & Cleaned)
 with col4:
-    st.subheader("Market Distortion")
+    st.subheader("Market Concentration")
     if not df_mkt.empty and len(df_mkt) >= 5:
         latest_ratio = df_mkt["Ratio"].iloc[-1]
         prev_ratio = df_mkt["Ratio"].iloc[-5]
-        ratio_delta = round(latest_ratio - prev_ratio, 3)
-        as_of_date = df_mkt.index[-1].strftime("%b %d, %Y")
+        ratio_delta = latest_ratio - prev_ratio
         
         if pd.isna(latest_ratio):
             st.error("❌ Market data calculation error")
@@ -217,9 +228,9 @@ with col4:
                 label="SPY / RSP Ratio",
                 value=f"{latest_ratio:.3f}",
                 delta=f"{ratio_delta:.3f} (5d change)",
-                help="WHAT TO LOOK FOR: Tracks how 'top-heavy' the stock market is. Above 3.00 means passive flows are blindly forcing all the market's money into just the top 10 mega-caps (like Nvidia and Apple), leaving the other 490 stocks starved."
+                help="WHAT TO LOOK FOR: Tracks how 'top-heavy' the stock market is. Above 3.00 means passive flows are blindly forcing all the market's money into just the top 10 mega-caps."
             )
-            st.caption(f"📅 Latest Obs: {as_of_date}")
+            st.caption(f"📅 **Obs:** {format_obs_date(df_mkt)} (Real-time)")
             if latest_ratio > 3.0:
                 st.warning("⚠️ TOP-HEAVY: Ratio over 3.0")
             else:
@@ -230,7 +241,7 @@ with col4:
 st.divider()
 
 # -----------------------------------------------------------------------------
-# PHASE 2: CHARTS WITH INTEGRATED "CHEAT SHEETS"
+# PHASE 2: CHARTS WITH CROSSHAIRS
 # -----------------------------------------------------------------------------
 st.header("📈 Data Visualizations & Cheat Sheets")
 
@@ -240,27 +251,24 @@ tab1, tab2, tab3 = st.tabs(
 
 with tab1:
     st.subheader("SPY (Market-Cap Weighted) vs RSP (Equal Weighted) Ratio")
-    
     with st.expander("💡 Cheat Sheet: How do I read this chart?", expanded=True):
         st.markdown("""
         * **What is it?** It compares the largest stocks to the average stock.
-        * **Going UP?** Passive indexing is winning. Money is flowing blindly into the top mega-caps regardless of reality.
+        * **Going UP?** Passive indexing is winning. Money is flowing blindly into the top mega-caps.
         * **Going DOWN or Flat?** Healthy market environment. Capital is spreading naturally into a wide array of businesses.
-        * **Levels to watch:** Below **2.50** is structurally very safe. Over **3.00** means extreme fragility.
+        * **Levels to watch:** Below **2.50** is structurally safe. Over **3.00** means extreme fragility.
         """)
         
     if not df_mkt.empty:
         fig1 = go.Figure()
         fig1.add_hrect(y0=0, y1=2.5, line_width=0, fillcolor="rgba(0, 255, 0, 0.1)", annotation_text="Healthy Range", annotation_position="bottom left")
         fig1.add_hrect(y0=3.0, y1=4.5, line_width=0, fillcolor="rgba(255, 0, 0, 0.1)", annotation_text="Dangerous Structural Fragility Zone", annotation_position="top left")
-        
         fig1.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Ratio"], mode="lines", name="Current Ratio", line=dict(color="#1f77b4", width=3)))
         fig1.update_layout(xaxis_title="Date", yaxis_title="Ratio Value", margin=dict(l=20, r=20, t=20, b=20))
         
-        # TWEAK 2: Crosshair Mouse Tracking
+        # Interactive Mouse Tracker Crosshairs
         fig1.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
         fig1.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
-        
         st.plotly_chart(fig1, use_container_width=True)
     else:
         st.warning("Cannot display visualization: Market alignment dataset empty.")
@@ -271,7 +279,7 @@ with tab2:
         st.markdown("""
         * **What is it?** Shows how many new people lost their job this week.
         * **Why it matters:** No job = no 401(k) automated paycheck deduction.
-        * **The Trigger Line:** The **red dashed line at 250,000** is the danger threshold. If the line breaks above that, the automated buying engine starts to stutter.
+        * **The Trigger Line:** The **red dashed line at 250,000** is the danger threshold.
         """)
         
     if not df_icsa.empty:
@@ -281,10 +289,8 @@ with tab2:
         fig2.add_trace(go.Scatter(x=plot_df.index, y=plot_df["ICSA"], mode="lines", name="Initial Claims", line=dict(color="#FF4B4B", width=2.5)))
         fig2.update_layout(xaxis_title="Date", yaxis_title="Claims Volume", margin=dict(l=20, r=20, t=20, b=20))
         
-        # TWEAK 2: Crosshair Mouse Tracking
         fig2.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
         fig2.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
-        
         st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
@@ -292,8 +298,8 @@ with tab3:
     with st.expander("💡 Cheat Sheet: How do I read this chart?", expanded=True):
         st.markdown("""
         * **What is it?** Tracks risk premiums in the corporate bond market.
-        * **Why it matters:** Bond markets are run by active, alert professionals. They notice stress long before the stock market does.
-        * **The Trigger Line:** The **red dashed line at 4.5%** represents structural credit stress. If it points sharply up, an economic downturn is unfolding underneath the passive market structure.
+        * **Why it matters:** Bond markets notice stress long before the stock market does.
+        * **The Trigger Line:** The **red dashed line at 4.5%** represents structural credit stress.
         """)
         
     if not df_spread.empty:
@@ -303,16 +309,12 @@ with tab3:
         fig3.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BAMLH0A0HYM2"], mode="lines", name="Credit Spread", line=dict(color="#00C0F2", width=2.5)))
         fig3.update_layout(xaxis_title="Date", yaxis_title="Spread Percentage (%)", margin=dict(l=20, r=20, t=20, b=20))
         
-        # TWEAK 2: Crosshair Mouse Tracking
         fig3.update_xaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
         fig3.update_yaxes(showspikes=True, spikecolor="gray", spikethickness=1, spikemode="across")
-        
         st.plotly_chart(fig3, use_container_width=True)
 
-
-# Sidebar parameters and background context information
+# Sidebar App Controls & Reminders
 with st.sidebar:
-    # TWEAK 3: MANUAL REFRESH CONTROL
     st.title("⚙️ App Controls")
     if st.button("🔄 Clear Cache & Refresh Data"):
         st.cache_data.clear()
