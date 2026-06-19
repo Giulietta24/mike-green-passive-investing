@@ -24,11 +24,10 @@ st.divider()
 UTC_TODAY = datetime.datetime.now(datetime.timezone.utc).date()
 
 # -----------------------------------------------------------------------------
-# 2. DATA ACQUISITION ENGINES (Fixed for Multi-Ticker Mismatch)
+# 2. DATA ACQUISITION ENGINES
 # -----------------------------------------------------------------------------
 def format_obs_date(df, column_name):
     if df.empty or column_name not in df.columns: return "N/A"
-    # Find the last index that actually has valid data for this column
     valid_series = df[column_name].dropna()
     if valid_series.empty: return "N/A"
     return valid_series.index[-1].strftime("%b %d, %Y")
@@ -64,7 +63,6 @@ def fetch_mkt_data():
     }
     series_list = []
     
-    # Fetch each ticker individually to destroy NaN alignment bugs
     for name, sym in tickers.items():
         try:
             t = yf.Ticker(sym).history(start=start_date, end=UTC_TODAY)
@@ -78,11 +76,9 @@ def fetch_mkt_data():
     if not series_list:
         return pd.DataFrame()
         
-    # Join along dates using 'outer' first to preserve data, then fill forward gaps
     df = pd.concat(series_list, axis=1, join="outer")
-    df = df.ffill().dropna(subset=["SPY", "RSP"]) # Ensure critical metrics exist
+    df = df.ffill().dropna(subset=["SPY", "RSP"])
     
-    # Calculate indicators safely
     df["Concentration_Ratio"] = df["SPY"] / df["RSP"]
     if "VVIX" in df.columns and "VIX" in df.columns:
         df["Vol_Dispersion"] = df["VVIX"] / df["VIX"]
@@ -100,20 +96,26 @@ fred_key = None
 if "FRED_API_KEY" in st.secrets:
     fred_key = st.secrets["FRED_API_KEY"]
 else:
-    # Placed prominent key entry box in the sidebar
     fred_key = st.sidebar.text_input("🔑 Enter Free FRED API Key:", type="password")
 
 with st.spinner("Compiling structural risk framework..."):
-    df_icsa, icsa_updated = fetch_fred_api("ICSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
-    df_jobs, jobs_updated = fetch_fred_api("CSCICP03USM665S", fred_key) if fred_key else (pd.DataFrame(), "N/A")
+    # FETCHING BOTH INITIAL (ICSA) AND CONTINUING (CCSA) CLAIMS NOW
+    df_icsa, _ = fetch_fred_api("ICSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
+    df_ccsa, _ = fetch_fred_api("CCSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
+    df_jobs, _ = fetch_fred_api("CSCICP03USM665S", fred_key) if fred_key else (pd.DataFrame(), "N/A")
     df_mkt = fetch_mkt_data()
+
+# Merge FRED claims files together cleanly for mapping
+df_claims = pd.DataFrame()
+if not df_icsa.empty and not df_ccsa.empty:
+    df_claims = pd.concat([df_icsa, df_ccsa], axis=1, join="inner")
 
 # -----------------------------------------------------------------------------
 # 4. SYSTEMIC SUMMARY BANNER
 # -----------------------------------------------------------------------------
-if not df_mkt.empty and not df_icsa.empty and not df_jobs.empty:
+if not df_mkt.empty and not df_claims.empty and not df_jobs.empty:
     current_ratio = df_mkt["Concentration_Ratio"].iloc[-1]
-    current_icsa = df_icsa["ICSA"].iloc[-1]
+    current_icsa = df_claims["ICSA"].iloc[-1]
     current_disp = df_mkt.get("Vol_Dispersion", pd.Series([0])).iloc[-1]
     
     triggers_tripped = 0
@@ -140,16 +142,16 @@ col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.subheader("Labor Flow Engine")
-    if not df_icsa.empty:
-        latest_icsa = df_icsa["ICSA"].iloc[-1]
+    if not df_claims.empty:
+        latest_icsa = df_claims["ICSA"].iloc[-1]
         st.metric(
             label="Weekly Jobless Claims", 
             value=f"{latest_icsa:,.0f}",
-            help="WHAT TO LOOK FOR: If this number shoots ABOVE 250k, it means people are losing jobs. When people lose jobs, their automatic 401(k) stock buying stops, and the stock market loses its steady fuel."
+            help="WHAT TO LOOK FOR: If this shoots ABOVE 250k, people are losing jobs. Automatic 401(k) stock buying drops to zero, and the blind market floor vanishes."
         )
-        st.caption(f"📅 **Obs:** {format_obs_date(df_icsa, 'ICSA')}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_claims, 'ICSA')}")
         if latest_icsa > 250000:
-            st.error("🚨 DANGER: Over 250k Threshold!")
+            st.error("🚨 DANGER: Over 250k!")
         else:
             st.success("🟢 Flow Engine Healthy")
     else:
@@ -162,11 +164,11 @@ with col2:
         st.metric(
             label="OECD US Confidence Proxy", 
             value=f"{latest_jobs:.2f}",
-            help="WHAT TO LOOK FOR: This tracks general economic confidence. Below 100 indicates contractions; crossing under 98.5 confirms systematic layout dangers that choke standard payroll contributions."
+            help="WHAT TO LOOK FOR: Tracks broad economic safety. Below 100 indicates contraction; crossing under 98.5 confirms major structural workforce disruptions."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_jobs, 'CSCICP03USM665S')}")
         if latest_jobs < 98.5:
-            st.error("🚨 Consumer Confidence Contracting")
+            st.error("🚨 Confidence Contracting")
         else:
             st.success("🟢 Confidence Stable")
     else:
@@ -179,13 +181,13 @@ with col3:
         st.metric(
             label="SPY / RSP Ratio", 
             value=f"{latest_ratio:.3f}",
-            help="WHAT TO LOOK FOR: Tracks how 'top-heavy' the stock market is. Above 3.00 means passive flows are blindly forcing all the market's money into just the top mega-caps (like Nvidia and Apple), leaving the other 490 stocks starved."
+            help="WHAT TO LOOK FOR: Above 3.00 means passive flows are blindly forcing all capital into just the top mega-caps, leaving the rest of the index starved."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_mkt, 'Concentration_Ratio')}")
         if latest_ratio > 3.0:
             st.warning("⚠️ Extreme Concentration")
         else:
-            st.success("🟢 Normal Capital Dispersion")
+            st.success("🟢 Normal Dispersion")
     else:
         st.error("❌ Market Data Delay")
 
@@ -196,11 +198,11 @@ with col4:
         st.metric(
             label="VVIX / VIX Ratio", 
             value=f"{latest_disp:.2f}x",
-            help="WHAT TO LOOK FOR: A high multiple over 5.5x indicates that while the index looks dead calm, single-stock under-the-hood volatility options are pricing in explosive chaos."
+            help="WHAT TO LOOK FOR: Multiples climbing past 5.5x indicate that while the index looks dead calm, underlying single stocks are experiencing structural stress."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_mkt, 'Vol_Dispersion')}")
         if latest_disp > 5.5:
-            st.warning("⚠️ Hidden Single-Stock Chaos")
+            st.warning("⚠️ Hidden Systemic Chaos")
         else:
             st.success("🟢 Compressed Index")
     else:
@@ -218,49 +220,46 @@ with tab1:
     st.subheader("Under-The-Hood Option Dispersion Proxy (VVIX / VIX)")
     with st.expander("💡 Cheat Sheet: How do I read this chart?", expanded=True):
         st.markdown("""
-        * **What is it?** Compares index volatility (VIX) against the underlying single-stock option volatility framework (VVIX).
-        * **Going UP?** Passive concentration is masking real-world, localized stock crashes beneath a perfectly calm index level.
-        * **The Trigger Line:** Multiples climbing past **5.5x** indicate that the coiled spring under the market is reaching structural limits.
+        * **What is it?** Compares index volatility (VIX) against option asset volatility vectors (VVIX).
+        * **Going UP?** Passive indexing concentration handles and masks structural, localized market pricing risks.
         """)
     if not df_mkt.empty and "Vol_Dispersion" in df_mkt.columns:
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Vol_Dispersion"], mode="lines", name="VVIX/VIX Ratio", line=dict(color="#9b59b6", width=2.5)))
         fig1.update_layout(xaxis_title="Date", yaxis_title="Ratio Multiple", margin=dict(l=20, r=20, t=20, b=20))
-        fig1.update_xaxes(showspikes=True, spikecolor="gray", spikemode="across")
-        fig1.update_yaxes(showspikes=True, spikecolor="gray", spikemode="across")
         st.plotly_chart(fig1, use_container_width=True)
 
 with tab2:
-    st.subheader("Structural Automated Inflow Health")
-    with st.expander("💡 Cheat Sheet: How do I read this chart?", expanded=True):
+    st.subheader("Initial vs. Continuing Unemployment Claims")
+    with st.expander("💡 Cheat Sheet: Dual-Engine Fuel Loss Tracking", expanded=True):
         st.markdown("""
-        * **What is it?** Evaluates broader macroeconomic employment security structures via the amplitude-adjusted consumer indices.
-        * **Why it matters:** Low confidence precedes shifts in automated payroll setups.
-        * **Key Benchmark:** Values above **100** indicate macro expansion; below **98.5** flags that regular passive index buying pools are systematically at risk.
+        * **Initial Claims (Red Line):** Shows how many people lost their job *this week*.
+        * **Continuing Claims (Blue Line):** Shows how many people *remain* unemployed. 
+        * **Why this combo is lethal:** If Continuing Claims scale upward, it means individuals are stuck out of work. Their recurring payroll retirement bid allocations are wiped out over a sustained period, removing the baseline mechanical bid keeping index valuations inflated.
         """)
-    if not df_jobs.empty:
+    if not df_claims.empty:
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df_jobs.index, y=df_jobs["CSCICP03USM665S"], mode="lines", name="OECD Proxy", line=dict(color="#2ecc71", width=2.5)))
-        fig2.update_layout(xaxis_title="Date", yaxis_title="Index Level (100 = Baseline)", margin=dict(l=20, r=20, t=20, b=20))
-        fig2.update_xaxes(showspikes=True, spikecolor="gray", spikemode="across")
-        fig2.update_yaxes(showspikes=True, spikecolor="gray", spikemode="across")
+        fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["ICSA"], mode="lines", name="Initial Claims (Weekly)", line=dict(color="#FF4B4B", width=2)))
+        fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["CCSA"], mode="lines", name="Continuing Claims (Sustained)", line=dict(color="#1f77b4", width=2), yaxis="y2"))
+        
+        # Setup dual axis layout so different scale sizes display perfectly together
+        fig2.update_layout(
+            xaxis_title="Date",
+            yaxis=dict(title="Initial Claims Volume", titlefont=dict(color="#FF4B4B"), tickfont=dict(color="#FF4B4B")),
+            yaxis2=dict(title="Continuing Claims Volume", titlefont=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4"), overlaying="y", side="right"),
+            margin=dict(l=20, r=20, t=20, b=20),
+            legend=dict(orientation="h", y=1.1)
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
 with tab3:
     st.subheader("Industrial Commodities Priced in Gold")
-    with st.expander("💡 Cheat Sheet: How do I read this chart?", expanded=True):
-        st.markdown("""
-        * **What is it?** Measures heavy industrial demand metrics (Copper & Lumber prices) relative to monetary escape assets (Gold).
-        * **The Divergence Warning:** If major stock indices are climbing to all-time records but these commodity trends are **crashing**, it confirms that the physical economy is stalling while passive structures continue buying blindly on auto-pilot.
-        """)
     if not df_mkt.empty and "Copper_Gold" in df_mkt.columns:
         fig3 = go.Figure()
         fig3.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Copper_Gold"], mode="lines", name="Copper/Gold Ratio", line=dict(color="#d35400", width=2)))
         if "Lumber_Gold" in df_mkt.columns:
             fig3.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Lumber_Gold"], mode="lines", name="Lumber/Gold Ratio", line=dict(color="#f39c12", width=2)))
         fig3.update_layout(xaxis_title="Date", yaxis_title="Ratio Pricing", margin=dict(l=20, r=20, t=20, b=20), legend=dict(orientation="h", y=1.1))
-        fig3.update_xaxes(showspikes=True, spikecolor="gray", spikemode="across")
-        fig3.update_yaxes(showspikes=True, spikecolor="gray", spikemode="across")
         st.plotly_chart(fig3, use_container_width=True)
 
 # -----------------------------------------------------------------------------
@@ -277,11 +276,10 @@ with st.sidebar:
     st.title("🧮 Glacier Metrics")
     passive_share = st.number_input(
         "Update Passive Market Share % (ICI Data):",
-        min_value=0.0, max_value=100.0, value=54.2, step=0.1,
-        help="Update manually when monthly or quarterly Investment Company Institute asset reports drop."
+        min_value=0.0, max_value=100.0, value=54.2, step=0.1
     )
     st.progress(passive_share / 100.0)
-    st.caption(f"Current State: **{passive_share}%**. Theoretical breaking threshold: **83.0%**.")
+    st.caption(f"Current State: **{passive_share}%**. Breaking threshold: **83.0%**.")
     
     st.divider()
     
@@ -290,5 +288,3 @@ with st.sidebar:
     st.checkbox("Mandatory Auto-Enrollment (New Corporate Plans)", value=True, disabled=True)
     st.checkbox("Catch-up limit increases for older workers", value=True, disabled=True)
     st.checkbox("Expanded Part-Time Employee Pools", value=False)
-    
-    st.info("💡 **Passive Theory Rule:** Legislative moves forcing structural auto-enrollment create a constant blind bid baseline, completely detached from underlying company valuations.")
