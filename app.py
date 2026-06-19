@@ -99,7 +99,6 @@ else:
     fred_key = st.sidebar.text_input("🔑 Enter Free FRED API Key:", type="password")
 
 with st.spinner("Compiling structural risk framework..."):
-    # FETCHING BOTH INITIAL (ICSA) AND CONTINUING (CCSA) CLAIMS NOW
     df_icsa, _ = fetch_fred_api("ICSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
     df_ccsa, _ = fetch_fred_api("CCSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
     df_jobs, _ = fetch_fred_api("CSCICP03USM665S", fred_key) if fred_key else (pd.DataFrame(), "N/A")
@@ -242,11 +241,19 @@ with tab2:
         fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["ICSA"], mode="lines", name="Initial Claims (Weekly)", line=dict(color="#FF4B4B", width=2)))
         fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["CCSA"], mode="lines", name="Continuing Claims (Sustained)", line=dict(color="#1f77b4", width=2), yaxis="y2"))
         
-        # Setup dual axis layout so different scale sizes display perfectly together
+        # FIXED: Modern structural nesting of text and fonts to fix image_ea3024.png validation crash
         fig2.update_layout(
-            xaxis_title="Date",
-            yaxis=dict(title="Initial Claims Volume", titlefont=dict(color="#FF4B4B"), tickfont=dict(color="#FF4B4B")),
-            yaxis2=dict(title="Continuing Claims Volume", titlefont=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4"), overlaying="y", side="right"),
+            xaxis=dict(title="Date"),
+            yaxis=dict(
+                title=dict(text="Initial Claims Volume", font=dict(color="#FF4B4B")),
+                tickfont=dict(color="#FF4B4B")
+            ),
+            yaxis2=dict(
+                title=dict(text="Continuing Claims Volume", font=dict(color="#1f77b4")),
+                tickfont=dict(color="#1f77b4"),
+                overlaying="y",
+                side="right"
+            ),
             margin=dict(l=20, r=20, t=20, b=20),
             legend=dict(orientation="h", y=1.1)
         )
