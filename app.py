@@ -1,9 +1,9 @@
 import datetime
-import urllib.request
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+import requests
 
 # Set up Page Config
 st.set_page_config(
@@ -22,60 +22,73 @@ st.divider()
 # Timezone-naive date fix: Use UTC for server consistency
 UTC_TODAY = datetime.datetime.now(datetime.timezone.utc).date()
 
+# -----------------------------------------------------------------------------
+# API KEY RESOLUTION (Streamlit Secrets or Sidebar Input fallback)
+# -----------------------------------------------------------------------------
+fred_key = None
+if "FRED_API_KEY" in st.secrets:
+    fred_key = st.secrets["FRED_API_KEY"]
+else:
+    fred_key = st.sidebar.text_input(
+        "🔑 Enter Free FRED API Key:", 
+        type="password",
+        help="Get a free key instantly from https://fred.stlouisfed.org/docs/api/api_key.html"
+    )
 
-# Helper function to grab FRED data safely bypassing bot blocks with explicit timeouts
+if not fred_key:
+    st.warning("⚠️ Please enter a free FRED API Key in the left sidebar to unlock the macroeconomic data streams.")
+
+
+# Helper function to fetch data using FRED's official JSON endpoint
 @st.cache_data(ttl=3600)
-def fetch_fred_csv(series_id):
-    # Using the direct data download URL endpoint with an explicit timeout
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+def fetch_fred_api(series_id, api_key):
+    if not api_key:
+        return pd.DataFrame()
+    
+    url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={api_key}&file_type=json"
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        )
-        # Added a strict 10-second timeout so the app never hangs indefinitely
-        with urllib.request.urlopen(req, timeout=10) as response:
-            df = pd.read_csv(response, parse_dates=["DATE"], index_col="DATE")
-
-        df[series_id] = pd.to_numeric(df[series_id], errors="coerce")
-        df = df.dropna()
+        response = requests.get(url, timeout=10).json()
+        if "observations" not in response:
+            return pd.DataFrame()
+            
+        # Parse official JSON structure into a clean dataframe
+        df = pd.DataFrame(response["observations"])
+        df["DATE"] = pd.to_datetime(df["date"])
+        df[series_id] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.set_index("DATE")[[series_id]].dropna()
         return df
-    except Exception as e:
-        # Log error to Streamlit components so you can see if a specific download fails
-        st.sidebar.error(f"FRED {series_id} load failed.")
+    except Exception:
         return pd.DataFrame()
 
 
-# Helper function to grab Yahoo Finance data safely guarding against multi-index columns
+# Helper function to grab Yahoo Finance data
 @st.cache_data(ttl=3600)
 def fetch_mkt_data():
     start_date = UTC_TODAY - datetime.timedelta(days=365)
     try:
-        # Download tickers individually to bypass any multi-index pandas data structure variations
         spy = yf.Ticker("SPY").history(start=start_date, end=UTC_TODAY)
         rsp = yf.Ticker("RSP").history(start=start_date, end=UTC_TODAY)
         
         if spy.empty or rsp.empty:
             return pd.DataFrame()
             
-        # Reconstruct a clean, flat dataframe manually
         df = pd.DataFrame(index=spy.index)
         df["SPY"] = spy["Close"]
         df["RSP"] = rsp["Close"]
         df["Ratio"] = df["SPY"] / df["RSP"]
         df = df.dropna()
         return df
-    except Exception as e:
-        st.sidebar.error(f"Market data load failed.")
+    except Exception:
         return pd.DataFrame()
 
 
 # -----------------------------------------------------------------------------
-# DATA RECOVERY PIPELINE (Granular failure handling)
+# DATA RECOVERY PIPELINE 
 # -----------------------------------------------------------------------------
 with st.spinner("Fetching latest market and macro plumbing metrics..."):
-    df_icsa = fetch_fred_csv("ICSA")
-    df_ccsa = fetch_fred_csv("CCSA")
-    df_spread = fetch_fred_csv("BAMLH0A0HYM2")
+    df_icsa = fetch_fred_api("ICSA", fred_key) if fred_key else pd.DataFrame()
+    df_ccsa = fetch_fred_api("CCSA", fred_key) if fred_key else pd.DataFrame()
+    df_spread = fetch_fred_api("BAMLH0A0HYM2", fred_key) if fred_key else pd.DataFrame()
     df_mkt = fetch_mkt_data()
 
 # -----------------------------------------------------------------------------
@@ -187,17 +200,8 @@ with tab1:
     st.subheader("SPY (Market-Cap Weighted) vs RSP (Equal Weighted) Ratio")
     if not df_mkt.empty:
         fig1 = go.Figure()
-        fig1.add_trace(
-            go.Scatter(
-                x=df_mkt.index,
-                y=df_mkt["Ratio"],
-                mode="lines",
-                name="SPY/RSP Ratio",
-            )
-        )
-        fig1.update_layout(
-            xaxis_title="Date", yaxis_title="Ratio Value", margin=dict(l=20, r=20, t=20, b=20)
-        )
+        fig1.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Ratio"], mode="lines", name="SPY/RSP Ratio"))
+        fig1.update_layout(xaxis_title="Date", yaxis_title="Ratio Value", margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig1, use_container_width=True)
     else:
         st.warning("Cannot display visualization: Market dataset empty")
@@ -207,56 +211,24 @@ with tab2:
     if not df_icsa.empty:
         plot_df = df_icsa.tail(104)
         fig2 = go.Figure()
-        fig2.add_hline(
-            y=250000,
-            line_dash="dash",
-            line_color="red",
-            annotation_text="Danger Trigger (250k)",
-            annotation_position="top left",
-        )
-        fig2.add_trace(
-            go.Scatter(
-                x=plot_df.index,
-                y=plot_df["ICSA"],
-                mode="lines",
-                name="Initial Claims",
-                line=dict(color="#FF4B4B"),
-            )
-        )
-        fig2.update_layout(
-            xaxis_title="Date", yaxis_title="Claims Volume", margin=dict(l=20, r=20, t=20, b=20)
-        )
+        fig2.add_hline(y=250000, line_dash="dash", line_color="red", annotation_text="Danger Trigger (250k)", annotation_position="top left")
+        fig2.add_trace(go.Scatter(x=plot_df.index, y=plot_df["ICSA"], mode="lines", name="Initial Claims", line=dict(color="#FF4B4B")))
+        fig2.update_layout(xaxis_title="Date", yaxis_title="Claims Volume", margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig2, use_container_width=True)
     else:
-        st.warning("Cannot display visualization: ICSA dataset empty")
+        st.warning("Please input a valid API Key to view historical chart trends.")
 
 with tab3:
     st.subheader("ICE BofA High Yield Option-Adjusted Spread")
     if not df_spread.empty:
         plot_df = df_spread.tail(260)
         fig3 = go.Figure()
-        fig3.add_hline(
-            y=4.5,
-            line_dash="dash",
-            line_color="red",
-            annotation_text="Stress Alert (4.5%)",
-            annotation_position="top left",
-        )
-        fig3.add_trace(
-            go.Scatter(
-                x=plot_df.index,
-                y=plot_df["BAMLH0A0HYM2"],
-                mode="lines",
-                name="Credit Spread",
-                line=dict(color="#00C0F2"),
-            )
-        )
-        fig3.update_layout(
-            xaxis_title="Date", yaxis_title="Spread Percentage (%)", margin=dict(l=20, r=20, t=20, b=20)
-        )
+        fig3.add_hline(y=4.5, line_dash="dash", line_color="red", annotation_text="Stress Alert (4.5%)", annotation_position="top left")
+        fig3.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BAMLH0A0HYM2"], mode="lines", name="Credit Spread", line=dict(color="#00C0F2")))
+        fig3.update_layout(xaxis_title="Date", yaxis_title="Spread Percentage (%)", margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig3, use_container_width=True)
     else:
-        st.warning("Cannot display visualization: Spread dataset empty")
+        st.warning("Please input a valid API Key to view historical chart trends.")
 
 # Sidebar Theory Tooltips
 with st.sidebar:
