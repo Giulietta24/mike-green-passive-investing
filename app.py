@@ -134,7 +134,7 @@ else:
 st.divider()
 
 # -----------------------------------------------------------------------------
-# 5. FRONT METRIC TILES
+# 5. FRONT METRIC TILES (WITH ADAPTIVE PROXIMITY ALERT COLORING)
 # -----------------------------------------------------------------------------
 st.header("🚨 Systemic Threshold Alerts")
 col1, col2, col3, col4 = st.columns(4)
@@ -144,13 +144,17 @@ with col1:
     if not df_claims.empty:
         latest_icsa = df_claims["ICSA"].iloc[-1]
         st.metric(
-            label="Weekly Jobless Claims", 
+            label="Weekly Jobless Claims (New)", 
             value=f"{latest_icsa:,.0f}",
             help="WHAT TO LOOK FOR: If this shoots ABOVE 250k, people are losing jobs. Automatic 401(k) stock buying drops to zero, and the blind market floor vanishes."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_claims, 'ICSA')}")
+        
+        # Adaptive Threshold Logic
         if latest_icsa > 250000:
-            st.error("🚨 DANGER: Over 250k!")
+            st.error("🚨 DANGER: Liquidity Floor Compromised")
+        elif 220000 <= latest_icsa <= 250000:
+            st.warning("⚠️ WARN: Approaching Proximity Boundary")
         else:
             st.success("🟢 Flow Engine Healthy")
     else:
@@ -166,8 +170,11 @@ with col2:
             help="WHAT TO LOOK FOR: Tracks broad economic safety. Below 100 indicates contraction; crossing under 98.5 confirms major structural workforce disruptions."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_jobs, 'CSCICP03USM665S')}")
+        
         if latest_jobs < 98.5:
             st.error("🚨 Confidence Contracting")
+        elif 98.5 <= latest_jobs <= 99.2:
+            st.warning("⚠️ WARN: Structural Softening")
         else:
             st.success("🟢 Confidence Stable")
     else:
@@ -183,8 +190,11 @@ with col3:
             help="WHAT TO LOOK FOR: Above 3.00 means passive flows are blindly forcing all capital into just the top mega-caps, leaving the rest of the index starved."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_mkt, 'Concentration_Ratio')}")
+        
         if latest_ratio > 3.0:
-            st.warning("⚠️ Extreme Concentration")
+            st.error("🚨 CRITICAL: Extreme Structural Inversion")
+        elif 2.8 <= latest_ratio <= 3.0:
+            st.warning("⚠️ WARN: Capital Allocation Narrowing")
         else:
             st.success("🟢 Normal Dispersion")
     else:
@@ -200,8 +210,11 @@ with col4:
             help="WHAT TO LOOK FOR: Multiples climbing past 5.5x indicate that while the index looks dead calm, underlying single stocks are experiencing structural stress."
         )
         st.caption(f"📅 **Obs:** {format_obs_date(df_mkt, 'Vol_Dispersion')}")
+        
         if latest_disp > 5.5:
-            st.warning("⚠️ Hidden Systemic Chaos")
+            st.error("🚨 CRITICAL: Impending Correlation Crack")
+        elif 5.0 <= latest_disp <= 5.5:
+            st.warning("⚠️ WARN: Under-The-Hood Options Stress")
         else:
             st.success("🟢 Compressed Index")
     else:
@@ -229,23 +242,23 @@ with tab1:
         st.plotly_chart(fig1, use_container_width=True)
 
 with tab2:
-    st.subheader("Initial vs. Continuing Unemployment Claims")
+    st.subheader("Initial (New) vs. Continuing Unemployment Claims")
     with st.expander("💡 Cheat Sheet: Dual-Engine Fuel Loss Tracking", expanded=True):
         st.markdown("""
-        * **Initial Claims (Red Line):** Shows how many people lost their job *this week*.
+        * **Initial Claims (Red Line):** Shows how many people lost their job *this week*. (New Claims)
         * **Continuing Claims (Blue Line):** Shows how many people *remain* unemployed. 
         * **Why this combo is lethal:** If Continuing Claims scale upward, it means individuals are stuck out of work. Their recurring payroll retirement bid allocations are wiped out over a sustained period, removing the baseline mechanical bid keeping index valuations inflated.
         """)
     if not df_claims.empty:
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["ICSA"], mode="lines", name="Initial Claims (Weekly)", line=dict(color="#FF4B4B", width=2)))
+        fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["ICSA"], mode="lines", name="New Claims (Weekly Initial)", line=dict(color="#FF4B4B", width=2)))
         fig2.add_trace(go.Scatter(x=df_claims.index, y=df_claims["CCSA"], mode="lines", name="Continuing Claims (Sustained)", line=dict(color="#1f77b4", width=2), yaxis="y2"))
         
-        # FIXED: Modern structural nesting of text and fonts to fix image_ea3024.png validation crash
+        # FIXED: Modern structural nesting of text and fonts to avoid validation crashes
         fig2.update_layout(
             xaxis=dict(title="Date"),
             yaxis=dict(
-                title=dict(text="Initial Claims Volume", font=dict(color="#FF4B4B")),
+                title=dict(text="New Claims Volume", font=dict(color="#FF4B4B")),
                 tickfont=dict(color="#FF4B4B")
             ),
             yaxis2=dict(
@@ -283,7 +296,7 @@ with st.sidebar:
     st.title("🧮 Glacier Metrics")
     passive_share = st.number_input(
         "Update Passive Market Share % (ICI Data):",
-        min_value=0.0, max_value=100.0, value=54.2, step=0.1
+        min_value=0.0, max_value=100.0, value=53.4, step=0.1
     )
     st.progress(passive_share / 100.0)
     st.caption(f"Current State: **{passive_share}%**. Breaking threshold: **83.0%**.")
