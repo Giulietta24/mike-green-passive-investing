@@ -5,7 +5,7 @@ import streamlit as st
 import yfinance as yf
 import requests
 
-# Set up Page Config
+# 1. PAGE SETUP
 st.set_page_config(
     page_title="Passive Endgame Monitor", page_icon="📊", layout="wide"
 )
@@ -20,15 +20,18 @@ buys stop, and the market plumbing could break.
 )
 st.divider()
 
-# Timezone-naive date fix: Use UTC for server consistency
+# Get server timezone-naive current date safely
 UTC_TODAY = datetime.datetime.now(datetime.timezone.utc).date()
 
 # -----------------------------------------------------------------------------
-# API HELPERS
+# 2. DATA ACQUISITION ENGINES (Fixed for Multi-Ticker Mismatch)
 # -----------------------------------------------------------------------------
-def format_obs_date(df):
-    if df.empty: return "N/A"
-    return df.index[-1].strftime("%b %d, %Y")
+def format_obs_date(df, column_name):
+    if df.empty or column_name not in df.columns: return "N/A"
+    # Find the last index that actually has valid data for this column
+    valid_series = df[column_name].dropna()
+    if valid_series.empty: return "N/A"
+    return valid_series.index[-1].strftime("%b %d, %Y")
 
 @st.cache_data(ttl=3600)
 def fetch_fred_api(series_id, api_key):
@@ -54,34 +57,50 @@ def fetch_fred_api(series_id, api_key):
 @st.cache_data(ttl=3600)
 def fetch_mkt_data():
     start_date = UTC_TODAY - datetime.timedelta(days=365)
-    try:
-        spy = yf.Ticker("SPY").history(start=start_date, end=UTC_TODAY)["Close"].rename("SPY")
-        rsp = yf.Ticker("RSP").history(start=start_date, end=UTC_TODAY)["Close"].rename("RSP")
-        vix = yf.Ticker("^VIX").history(start=start_date, end=UTC_TODAY)["Close"].rename("VIX")
-        vvix = yf.Ticker("^VVIX").history(start=start_date, end=UTC_TODAY)["Close"].rename("VVIX")
-        copper = yf.Ticker("HG=F").history(start=start_date, end=UTC_TODAY)["Close"].rename("Copper")
-        gold = yf.Ticker("GC=F").history(start=start_date, end=UTC_TODAY)["Close"].rename("Gold")
-        lumber = yf.Ticker("LBS=F").history(start=start_date, end=UTC_TODAY)["Close"].rename("Lumber")
-
-        df = pd.concat([spy, rsp, vix, vvix, copper, gold, lumber], axis=1, join="inner")
-        df.index = df.index.tz_localize(None)
+    tickers = {
+        "SPY": "SPY", "RSP": "RSP", 
+        "VIX": "^VIX", "VVIX": "^VVIX", 
+        "Copper": "HG=F", "Gold": "GC=F", "Lumber": "LBS=F"
+    }
+    series_list = []
+    
+    # Fetch each ticker individually to destroy NaN alignment bugs
+    for name, sym in tickers.items():
+        try:
+            t = yf.Ticker(sym).history(start=start_date, end=UTC_TODAY)
+            if not t.empty:
+                s = t["Close"].rename(name)
+                s.index = s.index.tz_localize(None)
+                series_list.append(s)
+        except Exception:
+            continue
+            
+    if not series_list:
+        return pd.DataFrame()
         
-        df["Concentration_Ratio"] = df["SPY"] / df["RSP"]
+    # Join along dates using 'outer' first to preserve data, then fill forward gaps
+    df = pd.concat(series_list, axis=1, join="outer")
+    df = df.ffill().dropna(subset=["SPY", "RSP"]) # Ensure critical metrics exist
+    
+    # Calculate indicators safely
+    df["Concentration_Ratio"] = df["SPY"] / df["RSP"]
+    if "VVIX" in df.columns and "VIX" in df.columns:
         df["Vol_Dispersion"] = df["VVIX"] / df["VIX"]
+    if "Copper" in df.columns and "Gold" in df.columns:
         df["Copper_Gold"] = df["Copper"] / df["Gold"]
+    if "Lumber" in df.columns and "Gold" in df.columns:
         df["Lumber_Gold"] = df["Lumber"] / df["Gold"]
         
-        return df.dropna()
-    except Exception:
-        return pd.DataFrame()
+    return df
 
 # -----------------------------------------------------------------------------
-# GLOBAL DATA SELECTION
+# 3. GLOBAL DATA LOADING
 # -----------------------------------------------------------------------------
 fred_key = None
 if "FRED_API_KEY" in st.secrets:
     fred_key = st.secrets["FRED_API_KEY"]
 else:
+    # Placed prominent key entry box in the sidebar
     fred_key = st.sidebar.text_input("🔑 Enter Free FRED API Key:", type="password")
 
 with st.spinner("Compiling structural risk framework..."):
@@ -90,12 +109,12 @@ with st.spinner("Compiling structural risk framework..."):
     df_mkt = fetch_mkt_data()
 
 # -----------------------------------------------------------------------------
-# AT-A-GLANCE STATUS SUMMARY BANNER
+# 4. SYSTEMIC SUMMARY BANNER
 # -----------------------------------------------------------------------------
 if not df_mkt.empty and not df_icsa.empty and not df_jobs.empty:
     current_ratio = df_mkt["Concentration_Ratio"].iloc[-1]
     current_icsa = df_icsa["ICSA"].iloc[-1]
-    current_disp = df_mkt["Vol_Dispersion"].iloc[-1]
+    current_disp = df_mkt.get("Vol_Dispersion", pd.Series([0])).iloc[-1]
     
     triggers_tripped = 0
     if current_ratio > 3.0: triggers_tripped += 1
@@ -109,12 +128,12 @@ if not df_mkt.empty and not df_icsa.empty and not df_jobs.empty:
     else:
         st.success("🟢 **SYSTEMIC ASSESSMENT:** All metrics currently within normal historical baseline ranges.")
 else:
-    st.info("💡 **SYSTEMIC ASSESSMENT:** Connect your API key to generate system health status indicators.")
+    st.info("💡 **SYSTEMIC ASSESSMENT:** Connect your FRED API key to generate system health status indicators.")
 
 st.divider()
 
 # -----------------------------------------------------------------------------
-# FRONT METRIC TILES WITH HOVER EXPLANATIONS
+# 5. FRONT METRIC TILES
 # -----------------------------------------------------------------------------
 st.header("🚨 Systemic Threshold Alerts")
 col1, col2, col3, col4 = st.columns(4)
@@ -128,7 +147,7 @@ with col1:
             value=f"{latest_icsa:,.0f}",
             help="WHAT TO LOOK FOR: If this number shoots ABOVE 250k, it means people are losing jobs. When people lose jobs, their automatic 401(k) stock buying stops, and the stock market loses its steady fuel."
         )
-        st.caption(f"📅 **Obs:** {format_obs_date(df_icsa)}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_icsa, 'ICSA')}")
         if latest_icsa > 250000:
             st.error("🚨 DANGER: Over 250k Threshold!")
         else:
@@ -145,7 +164,7 @@ with col2:
             value=f"{latest_jobs:.2f}",
             help="WHAT TO LOOK FOR: This tracks general economic confidence. Below 100 indicates contractions; crossing under 98.5 confirms systematic layout dangers that choke standard payroll contributions."
         )
-        st.caption(f"📅 **Obs:** {format_obs_date(df_jobs)}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_jobs, 'CSCICP03USM665S')}")
         if latest_jobs < 98.5:
             st.error("🚨 Consumer Confidence Contracting")
         else:
@@ -162,7 +181,7 @@ with col3:
             value=f"{latest_ratio:.3f}",
             help="WHAT TO LOOK FOR: Tracks how 'top-heavy' the stock market is. Above 3.00 means passive flows are blindly forcing all the market's money into just the top mega-caps (like Nvidia and Apple), leaving the other 490 stocks starved."
         )
-        st.caption(f"📅 **Obs:** {format_obs_date(df_mkt)}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_mkt, 'Concentration_Ratio')}")
         if latest_ratio > 3.0:
             st.warning("⚠️ Extreme Concentration")
         else:
@@ -172,14 +191,14 @@ with col3:
 
 with col4:
     st.subheader("Volatility Dispersion")
-    if not df_mkt.empty:
+    if not df_mkt.empty and "Vol_Dispersion" in df_mkt.columns:
         latest_disp = df_mkt["Vol_Dispersion"].iloc[-1]
         st.metric(
             label="VVIX / VIX Ratio", 
             value=f"{latest_disp:.2f}x",
             help="WHAT TO LOOK FOR: A high multiple over 5.5x indicates that while the index looks dead calm, single-stock under-the-hood volatility options are pricing in explosive chaos."
         )
-        st.caption(f"📅 **Obs:** {format_obs_date(df_mkt)}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_mkt, 'Vol_Dispersion')}")
         if latest_disp > 5.5:
             st.warning("⚠️ Hidden Single-Stock Chaos")
         else:
@@ -190,7 +209,7 @@ with col4:
 st.divider()
 
 # -----------------------------------------------------------------------------
-# GRAPH VISUALIZATIONS & ADHD CHEAT SHEETS
+# 6. GRAPH VISUALIZATIONS & ADHD CHEAT SHEETS
 # -----------------------------------------------------------------------------
 st.header("📈 Deep Framework Diagnostics")
 tab1, tab2, tab3 = st.tabs(["⚙️ Volatility Dispersion Mechanics", "🧑‍🔧 Labor Dynamics (The Fuel)", "📉 Real Economy Check-Engine Light"])
@@ -203,7 +222,7 @@ with tab1:
         * **Going UP?** Passive concentration is masking real-world, localized stock crashes beneath a perfectly calm index level.
         * **The Trigger Line:** Multiples climbing past **5.5x** indicate that the coiled spring under the market is reaching structural limits.
         """)
-    if not df_mkt.empty:
+    if not df_mkt.empty and "Vol_Dispersion" in df_mkt.columns:
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Vol_Dispersion"], mode="lines", name="VVIX/VIX Ratio", line=dict(color="#9b59b6", width=2.5)))
         fig1.update_layout(xaxis_title="Date", yaxis_title="Ratio Multiple", margin=dict(l=20, r=20, t=20, b=20))
@@ -234,17 +253,18 @@ with tab3:
         * **What is it?** Measures heavy industrial demand metrics (Copper & Lumber prices) relative to monetary escape assets (Gold).
         * **The Divergence Warning:** If major stock indices are climbing to all-time records but these commodity trends are **crashing**, it confirms that the physical economy is stalling while passive structures continue buying blindly on auto-pilot.
         """)
-    if not df_mkt.empty:
+    if not df_mkt.empty and "Copper_Gold" in df_mkt.columns:
         fig3 = go.Figure()
         fig3.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Copper_Gold"], mode="lines", name="Copper/Gold Ratio", line=dict(color="#d35400", width=2)))
-        fig3.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Lumber_Gold"], mode="lines", name="Lumber/Gold Ratio", line=dict(color="#f39c12", width=2)))
+        if "Lumber_Gold" in df_mkt.columns:
+            fig3.add_trace(go.Scatter(x=df_mkt.index, y=df_mkt["Lumber_Gold"], mode="lines", name="Lumber/Gold Ratio", line=dict(color="#f39c12", width=2)))
         fig3.update_layout(xaxis_title="Date", yaxis_title="Ratio Pricing", margin=dict(l=20, r=20, t=20, b=20), legend=dict(orientation="h", y=1.1))
         fig3.update_xaxes(showspikes=True, spikecolor="gray", spikemode="across")
         fig3.update_yaxes(showspikes=True, spikecolor="gray", spikemode="across")
         st.plotly_chart(fig3, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# SIDEBAR REFRESH & MACRO REGISTRYS
+# 7. SIDEBAR REFRESH & REGISTRIES
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ Controls")
