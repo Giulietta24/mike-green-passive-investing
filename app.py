@@ -101,7 +101,7 @@ else:
 with st.spinner("Compiling structural risk framework..."):
     df_icsa, _ = fetch_fred_api("ICSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
     df_ccsa, _ = fetch_fred_api("CCSA", fred_key) if fred_key else (pd.DataFrame(), "N/A")
-    df_jobs, _ = fetch_fred_api("CSCICP03USM665S", fred_key) if fred_key else (pd.DataFrame(), "N/A")
+    df_jobs, _ = fetch_fred_api("UNRATE", fred_key) if fred_key else (pd.DataFrame(), "N/A")
     df_mkt = fetch_mkt_data()
 
 # Merge FRED claims files together cleanly for mapping
@@ -161,22 +161,23 @@ with col1:
         st.error("❌ Link FRED API Key")
 
 with col2:
-    st.subheader("Jobs Confidence")
+    st.subheader("Jobs Disruption")
     if not df_jobs.empty:
-        latest_jobs = df_jobs["CSCICP03USM665S"].iloc[-1]
+        latest_unrate = df_jobs["UNRATE"].iloc[-1]
         st.metric(
-            label="OECD US Confidence Proxy", 
-            value=f"{latest_jobs:.2f}",
-            help="WHAT TO LOOK FOR: Tracks broad economic safety. Below 100 indicates contraction; crossing under 98.5 confirms major structural workforce disruptions."
+            label="U.S. Unemployment Rate", 
+            value=f"{latest_unrate:.1f}%",
+            help="WHAT TO LOOK FOR: Actual job losses hitting the macro economy. Moving above 4.5% signals structural labor deterioration that threatens recurring 401(k) inflows."
         )
-        st.caption(f"📅 **Obs:** {format_obs_date(df_jobs, 'CSCICP03USM665S')}")
+        st.caption(f"📅 **Obs:** {format_obs_date(df_jobs, 'UNRATE')}")
         
-        if latest_jobs < 98.5:
-            st.error("🚨 Confidence Contracting")
-        elif 98.5 <= latest_jobs <= 99.2:
-            st.warning("⚠️ WARN: Structural Softening")
+        # Macro labor trigger boundaries
+        if latest_unrate > 4.5:
+            st.error("🚨 CRITICAL: Labor Deterioration Active")
+        elif 4.1 <= latest_unrate <= 4.5:
+            st.warning("⚠️ WARN: Structural Labor Weakening")
         else:
-            st.success("🟢 Confidence Stable")
+            st.success("🟢 Employment Base Stable")
     else:
         st.error("❌ Link FRED API Key")
 
